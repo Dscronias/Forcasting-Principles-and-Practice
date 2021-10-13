@@ -1,0 +1,40 @@
+# Time series decomposition
+
+```{r, include = FALSE}
+# Libraries
+library(tidyverse)
+library(tsibble)
+library(fpp3)
+library(knitr)
+library(svglite)
+library(ggthemes)
+library(lemon)
+library(USgas)
+
+# Datasets
+olympic_running <- tsibbledata::olympic_running
+PBS <- tsibbledata::PBS # nolint
+vic_elec <- tsibbledata::vic_elec
+tourism <- tsibble::tourism
+aus_production <- tsibbledata::aus_production
+gafa_stock <- tsibbledata::gafa_stock
+pelt <- tsibbledata::pelt
+aus_arrivals <- fpp3::aus_arrivals
+aus_retail <- tsibbledata::aus_retail
+
+# Parameters
+kable_length <- 5
+svg_res <- 144
+
+# GGplot graphical style
+theme_set(
+  theme_tufte() +
+  theme(
+    axis.line = element_line(colour = "black", size = rel(1))
+  )
+)
+short_axis <- function(baxis = "both", laxis = "both") {
+  return(lemon::coord_capped_cart(bottom = baxis, left = laxis))
+}
+```
+

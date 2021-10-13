@@ -1,0 +1,547 @@
+# Time series graphics
+
+## Tsibble
+
+```{r, include = FALSE}
+# Libraries
+library(tidyverse)
+library(tsibble)
+library(fpp3)
+library(knitr)
+library(svglite)
+library(ggthemes)
+library(lemon)
+library(USgas)
+
+# Datasets
+olympic_running <- tsibbledata::olympic_running
+PBS <- tsibbledata::PBS # nolint
+vic_elec <- tsibbledata::vic_elec
+tourism <- tsibble::tourism
+aus_production <- tsibbledata::aus_production
+gafa_stock <- tsibbledata::gafa_stock
+pelt <- tsibbledata::pelt
+aus_arrivals <- fpp3::aus_arrivals
+aus_retail <- tsibbledata::aus_retail
+
+# Parameters
+kable_length <- 5
+svg_res <- 144
+
+# GGplot graphical style
+theme_set(
+  theme_tufte() +
+  theme(
+    axis.line = element_line(colour = "black", size = rel(1))
+  )
+)
+short_axis <- function(baxis = "both", laxis = "both") {
+  return(lemon::coord_capped_cart(bottom = baxis, left = laxis))
+}
+```
+
+Tsibble example
+
+```{r}
+y <- tsibble(
+  Year = 2015:2019,
+  Observation = c(123, 39, 78, 52, 110),
+  index = Year
+)
+y
+```
+
+Olympic running dataframe
+
+```{r}
+kable(olympic_running[1:kable_length, ])
+olympic_running %>% distinct(Sex, Length) %>% kable()
+```
+
+Some training on dplyr
+
+```{r}
+kable(PBS[1:kable_length, ])
+PBS %>%
+  filter(ATC2 == "A10") %>%
+  select(Month, Concession, Type, Cost) %>%
+  slice_head(n = 5) %>%
+  kable()
+
+# Total cost by monthyear
+PBS %>%
+  filter(ATC2 == "A10") %>%
+  select(Month, Concession, Type, Cost) %>%
+  summarise(TotalCost = sum(Cost))
+
+# Total cost by monthyear (M dollars)
+PBS %>%
+  filter(ATC2 == "A10") %>%
+  select(Month, Concession, Type, Cost) %>%
+  summarise(TotalCost = sum(Cost)) %>%
+  mutate(TotalCost = TotalCost / 1e6) -> a10
+a10
+```
+
+Importing a csv
+
+```{r}
+prison <- readr::read_csv("https://OTexts.com/fpp3/extrafiles/prison_population.csv") # nolint
+prison
+
+prison <- prison %>%
+  mutate(Quarter = yearquarter(Date)) %>%
+  select(-Date) %>%
+  as_tsibble(key = c(State, Gender, Legal, Indigenous),
+             index = Quarter)
+
+prison
+```
+
+## Time plots
+
+Ansett dataframe
+
+```{r}
+ansett <- ansett
+ansett
+```
+
+```{r}
+ansett %>%
+  filter(Airports == "MEL-SYD", Class == "Economy") %>%
+  mutate(Passengers = Passengers / 1000) -> melsyd_economy
+melsyd_economy
+```
+
+```{r}
+# For svg: https://www.r-bloggers.com/2020/05/superior-svg-graphics-rendering-in-r-and-why-it-matters/ # nolint
+autoplot(melsyd_economy, Passengers) +
+  labs(
+    title = "Ansett airlines economy class",
+    subtitle = "Melbourne-Sydney",
+    y = "Passengers ('000)"
+  ) + short_axis()
+```
+
+
+## Time series patterns
+
+## Seasonal plots
+
+```{r}
+autoplot(a10, TotalCost) +
+  labs(
+    y = "$ (millions)",
+    title = "Australian antidiabetic drug sales"
+  )
+```
+```{r}
+a10 %>%
+  gg_season(TotalCost, labels = "both") +
+  labs(y = "$ (millions)",
+       title = "Seasonal plot: Antidiabetic drug sales")
+```
+
+### Electricity demand graphs
+
+```{r}
+as_tibble(vic_elec) %>%
+  group_by(Date = floor_date(Time, "day")) %>%
+  summarise(
+    Demand = mean(Demand),
+    Temperature = mean(Temperature)
+  ) %>%
+  as_tsibble(index = Date) %>%
+  autoplot(Demand)
+```
+
+There is a peak at +7000MW at the beginning of 2014. Curious.
+
+```{r}
+as_tibble(vic_elec) %>%
+  group_by(Date = floor_date(Time, "day")) %>%
+  summarise(
+    Demand = mean(Demand),
+    Temperature = mean(Temperature)
+  ) %>%
+  filter(Demand > 6500)
+```
+
+14 & 15 Jan 2014. There was a [heatwave](https://www2.health.vic.gov.au/Api/downloadmedia/%7BDC381402-DF8F-42A5-8153-2BDF690F5402%7D).
+
+```{r}
+as_tibble(vic_elec) %>%
+  group_by(Date = floor_date(Time, "month")) %>%
+  summarise(Demand = mean(Demand)) %>%
+  as_tsibble(index = Date) %>%
+  autoplot(Demand)
+```
+
+Seasonal plots
+
+```{r}
+vic_elec %>% gg_season(Demand, period = "day") +
+  theme(legend.position = "none") +
+  labs(y = "MW", title = "Electricity demand: Victoria")
+```
+
+```{r}
+vic_elec %>% gg_season(Demand, period = "year") +
+  labs(y = "MW", title = "Electricity demand: Victoria")
+```
+
+## Seasonal subseries plots
+
+```{r}
+a10 %>%
+  gg_subseries(TotalCost) +
+  labs(
+    y = "$ (millions)",
+    title = "Australian antidiabetic drug sales"
+  )
+```
+
+```{r}
+holidays <- tourism %>%
+  filter(Purpose == "Holiday") %>%
+  group_by(State) %>%
+  summarise(Trips = sum(Trips))
+holidays
+```
+
+```{r}
+autoplot(holidays, Trips) +
+  labs(y = "Overnight trips ('000)",
+       title = "Australian domestic holidays")
+```
+
+```{r}
+gg_season(holidays, Trips) +
+  labs(y = "Overnight trips ('000)",
+       title = "Australian domestic holidays")
+```
+
+```{r}
+holidays %>%
+  gg_subseries(Trips) +
+  labs(y = "Overnight trips ('000)",
+       title = "Australian domestic holidays")
+```
+
+## Scatterplots
+
+```{r}
+vic_elec %>%
+  filter(year(Time) == 2014) %>%
+  autoplot(Demand) +
+  labs(y = "MW",
+       title = "Half-hourly electricity demand: Victoria")
+```
+
+```{r}
+vic_elec %>%
+  filter(year(Time) == 2014) %>%
+  autoplot(Temperature) +
+  labs(
+    y = "Degrees Celsius",
+    title = "Half-hourly temperatures: Melbourne, Australia"
+  )
+```
+
+```{r}
+vic_elec %>%
+  filter(year(Time) == 2014) %>%
+  ggplot(aes(x = Temperature, y = Demand)) +
+  geom_point() +
+  labs(x = "Temperature (degrees Celsius)",
+       y = "Electricity demand (MW)")
+```
+
+```{r}
+visitors <- tourism %>%
+  group_by(State) %>%
+  summarise(Trips = sum(Trips))
+visitors %>%
+  ggplot(aes(x = Quarter, y = Trips)) +
+  geom_line() +
+  facet_grid(vars(State), scales = "free_y") +
+  labs(title = "Australian domestic tourism",
+       y = "Overnight trips ('000)")
+```
+
+```{r}
+visitors %>%
+  pivot_wider(values_from = Trips, names_from = State) %>%
+  GGally::ggpairs(columns = 2:9)
+```
+
+## Lag plots
+
+```{r}
+aus_production
+```
+
+```{r}
+recent_production <- aus_production %>%
+  filter(year(Quarter) >= 2000)
+recent_production %>%
+  gg_lag(Beer, geom = "point") +
+  labs(x = "lag(Beer, k)")
+```
+
+## Autocorrelation
+```{r}
+recent_production %>% ACF(Beer, lag_max = 9)
+recent_production %>%
+  ACF(Beer) %>%
+  autoplot() + labs(title = "Australian beer production")
+```
+
+```{r}
+a10 %>%
+  ACF(TotalCost, lag_max = 48) %>%
+  autoplot() +
+  labs(title = "Australian antidiabetic drug sales")
+```
+
+## White noise
+
+```{r}
+y <- tsibble(sample = 1:1000, wn = rnorm(1000), index = sample)
+y %>% autoplot(wn) + labs(title = "White noise", y = "")
+```
+
+```{r}
+y %>%
+  ACF(wn) %>%
+  autoplot() + labs(title = "White noise")
+```
+
+## Exercises
+
+1. Use the help function to explore what the series gafa_stock, PBS, vic_elec and pelt represent.
+  a. use autoplot() to find what days corresponded to the peak closing price for each of the four stocks in gafa_stock
+  b. What is the time interval of each series
+
+`gafa_stock`
+
+Daily data. Except week-ends.
+```{r}
+gafa_stock
+gafa_stock %>%
+  autoplot(Open)
+```
+```{r}
+gafa_stock %>%
+  autoplot(Volume)
+```
+```{r}
+gafa_stock %>%
+  ggplot(
+    aes(x = Open, y = Volume, color = Symbol)
+  ) +
+  geom_point() +
+  labs(
+    x = "Opening price",
+    y = "Volume"
+  ) +
+  short_axis()
+```
+```{r}
+gafa_stock %>%
+  mutate(ValueTraded = Open * Volume / 1e9) %>%
+  autoplot(ValueTraded)
+```
+
+Efficient solution to get maximum Close for each Symbol.
+
+```{r}
+as_tibble(gafa_stock) %>%
+  group_by(Symbol) %>%
+  filter(Close == max(Close)) %>%
+  select(Symbol, Date, Close) %>%
+  kable()
+```
+
+Inefficient solution 
+
+```{r}
+for (company in factor(gafa_stock$Symbol) %>% levels()) {
+  gafa_stock %>%
+    filter(Symbol == company) %>%
+    arrange(desc(Close)) %>%
+    print()
+}
+```
+
+3. Download the file tute1.csv from the book website, open it in Excel (or some other spreadsheet application), and review its contents. You should find four columns of information. Columns B through D each contain a quarterly series, labelled Sales, AdBudget and GDP. Sales contains the quarterly sales for a small company over the period 1981-2005. AdBudget is the advertising budget and GDP is the gross domestic product. All series have been adjusted for inflation.
+
+```{r}
+tute1 <- readr::read_csv("tute1.csv") %>%
+  mutate(Quarter = yearmonth(Quarter)) %>%
+  as_tsibble(index = Quarter)
+tute1
+```
+
+```{r}
+tute1 %>%
+  pivot_longer(!Quarter) %>%
+  ggplot(
+    aes(x = Quarter, y = value, color = name)
+  ) +
+  geom_line()
+```
+
+```{r}
+tute1 %>%
+  pivot_longer(!Quarter) %>%
+  ggplot(
+    aes(x = Quarter, y = value, color = name)
+  ) +
+  geom_line() +
+  facet_grid(name ~ ., scales = "free_y")
+```
+
+4. `USgas`
+
+```{r}
+us_total <- USgas::us_total %>%
+  as_tsibble(index = year, key = state)
+```
+
+```{r}
+new_england <- c(
+  "Maine", "Vermont", "New Hampshire", "Massachusetts",
+  "Connecticut", "Rhode Island"
+)
+
+us_total %>%
+  filter(state %in% new_england) %>%
+  ggplot(
+    aes(x = year, y = y, color = state)
+  ) +
+  geom_line() +
+  labs(x = "Year", y = "Gas consumption")
+```
+
+5. Tourism.xlsx
+
+```{r}
+tourism_xl <- readxl::read_excel("tourism.xlsx") %>%
+  mutate(Quarter = yearquarter(Quarter)) %>%
+  as_tsibble(index = Quarter, key = c("Region", "State", "Purpose"))
+```
+
+```{r}
+tourism_xl %>%
+  group_by(Region, Purpose) %>%
+  summarise(Trips = mean(Trips)) %>%
+  arrange(desc(Trips))
+```
+
+```{r}
+tourism_xl %>%
+  group_by(State) %>%
+  summarise(Trips = sum(Trips))
+```
+
+6. Trivial. I have done that too much already.
+
+7. `aus_arrivals` 
+
+```{r}
+aus_arrivals
+```
+
+```{r}
+aus_arrivals %>%
+  autoplot(Arrivals) +
+  short_axis()
+```
+
+The magnitude of the seasonality is a lot higher for NZ and the UK. Less so for Japan and the US.
+All countries seem to follow an increasing trend, except for flights coming from Japan: it peaked in the mid 90s, and has decreased steadily ever since.
+
+```{r}
+aus_arrivals %>%
+  gg_season(y = Arrivals)
+```
+
+Arrivals from the UK (and the US?) are noticeably higher in Q1 and Q4. Understandable, since it's winter in the northern hemisphere.
+For NZ, we observe the opposite.
+
+```{r}
+aus_arrivals %>%
+  gg_subseries(y = Arrivals)
+```
+
+It seems arrivals from the UK actually began decreasing a few years ago.  
+There are some peaks in arrivals from the US at the end of the 80s and the 90s.
+
+8. `aus_retail`
+
+```{r}
+set.seed(451)
+aus_retail_sample <- aus_retail %>%
+  filter(`Series ID` == sample(aus_retail$`Series ID`, 1))
+```
+```{r}
+aus_retail_sample %>%
+  autoplot(Turnover)
+```
+
+Increasing turnover, alright. There is seasonality and an inrceasing trend, but there does not seem to be significant cyclicity.
+
+```{r}
+aus_retail_sample %>%
+  gg_season(Turnover)
+```
+
+It gets noticeably higher in November & December. Also in March, and sometimes during the summer?
+
+```{r}
+aus_retail_sample %>%
+  gg_subseries(Turnover)
+```
+
+Same observation.
+
+```{r}
+aus_retail_sample %>%
+  gg_lag(Turnover)
+```
+
+Same observation as before : December has the highest turnover, compared to every other month.
+
+```{r}
+aus_retail_sample %>%
+  ACF(Turnover) %>%
+  autoplot()
+```
+
+Unsurprisingly, there is (very) significant positive autocorrelation.
+
+12. Google
+
+```{r}
+dgoog <- gafa_stock %>%
+  filter(Symbol == "GOOG", year(Date) >= 2018) %>%
+  mutate(trading_day = row_number()) %>%
+  update_tsibble(index = trading_day, regular = TRUE) %>%
+  mutate(diff = difference(Close))
+```
+
+```{r}
+dgoog %>%
+  ACF(Close) %>%
+  autoplot()
+```
+
+```{r}
+dgoog %>%
+  ACF(diff) %>%
+  autoplot()
+```
+
+It does seem to be white noise.
