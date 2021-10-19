@@ -1,0 +1,292 @@
+# The forecaster's toolbox
+
+```{r, include = FALSE}
+# Libraries
+library(tidyverse)
+library(tsibble)
+library(fpp3)
+library(knitr)
+library(svglite)
+library(ggthemes)
+library(lemon)
+library(USgas)
+library(glue)
+library(broom)
+
+# Datasets
+olympic_running <- tsibbledata::olympic_running
+pbs <- tsibbledata::PBS
+vic_elec <- tsibbledata::vic_elec
+tourism <- tsibble::tourism
+aus_production <- tsibbledata::aus_production
+gafa_stock <- tsibbledata::gafa_stock
+pelt <- tsibbledata::pelt
+aus_arrivals <- fpp3::aus_arrivals
+aus_retail <- tsibbledata::aus_retail
+us_employment <- fpp3::us_employment
+global_economy <- tsibbledata::global_economy
+aus_livestock <- tsibbledata::aus_livestock
+
+# Functions
+
+## Get the lambda for a Box-Cox transformation
+## using the Guerrero method
+get_boxcox_lambda <- function(df, var) {
+  df %>%
+  features(df[, var], features = guerrero) %>%
+  pull(lambda_guerrero)
+}
+
+# Parameters
+kable_length <- 5
+svg_res <- 144
+
+# GGplot graphical style
+theme_set(
+  theme_tufte() +
+  theme(
+    axis.line = element_line(colour = "black", size = rel(1))
+  )
+)
+short_axis <- function(baxis = "both", laxis = "both") {
+  return(lemon::coord_capped_cart(bottom = baxis, left = laxis))
+}
+```
+
+## A tidy forecasting workflow
+
+```{r}
+gdppc <- global_economy %>%
+  mutate(GDP_per_capita = GDP / Population)
+gdppc
+```
+
+```{r}
+gdppc %>%
+  filter(Country == "Sweden") %>%
+  autoplot(GDP_per_capita) +
+  labs(y = "$US", title = "GDP per capita for Sweden")
+```
+
+```{r}
+fit <- gdppc %>%
+  model(trend_model = TSLM(GDP_per_capita ~ trend()))
+```
+
+```{r}
+fit %>% forecast(h = "3 years")
+```
+
+```{r}
+fit %>%
+  filter(Country == "Sweden") %>%
+  forecast(h = "3 years") %>%
+  autoplot(gdppc) +
+  labs(y = "$US", title = "GDP per capita for Sweden")
+```
+
+## Some simple forecasting methods
+
+```{r}
+bricks <- aus_production %>%
+  filter_index("1970 Q1" ~ "2004 Q4")
+```
+
+```{r}
+bricks %>% model(mean = MEAN(Bricks)) %>% forecast(h = "3 years") %>% autoplot(bricks)
+```
+
+```{r}
+bricks %>% model(NAIVE(Bricks)) %>% forecast(h = "3 years") %>% autoplot(bricks)
+```
+
+```{r}
+bricks %>% model(SNAIVE(Bricks ~ lag("year"))) %>% forecast(h = "3 years") %>% autoplot(bricks)
+```
+
+```{r}
+bricks %>% model(RW(Bricks ~ drift())) %>% forecast(h = "3 years") %>% autoplot(bricks)
+```
+
+```{r}
+# Set training data from 1992 to 2006
+train <- aus_production %>%
+  filter_index("1992 Q1" ~ "2006 Q4")
+# Fit the models
+beer_fit <- train %>%
+  model(
+    Mean = MEAN(Beer),
+    `Naïve` = NAIVE(Beer),
+    `Seasonal naïve` = SNAIVE(Beer)
+  )
+# Generate forecasts for 14 quarters
+beer_fc <- beer_fit %>% forecast(h = 14)
+# Plot forecasts against actual values
+beer_fc %>%
+  autoplot(train, level = NULL) +
+  autolayer(
+    filter_index(aus_production, "2007 Q1" ~ .),
+    colour = "black"
+  ) +
+  labs(
+    y = "Megalitres",
+    title = "Forecasts for quarterly beer production"
+  ) +
+  guides(colour = guide_legend(title = "Forecast"))
+```
+
+Seasonal naïve is actually quite close. Surprising.
+
+```{r}
+# Re-index based on trading days
+google_stock <- gafa_stock %>%
+  filter(Symbol == "GOOG", year(Date) >= 2015) %>%
+  mutate(day = row_number()) %>%
+  update_tsibble(index = day, regular = TRUE)
+# Filter the year of interest
+google_2015 <- google_stock %>% filter(year(Date) == 2015)
+# Fit the models
+google_fit <- google_2015 %>%
+  model(
+    Mean = MEAN(Close),
+    `Naïve` = NAIVE(Close),
+    Drift = NAIVE(Close ~ drift())
+  )
+# Produce forecasts for the trading days in January 2016
+google_jan_2016 <- google_stock %>%
+  filter(yearmonth(Date) == yearmonth("2016 Jan"))
+google_fc <- google_fit %>%
+  forecast(new_data = google_jan_2016)
+# Plot the forecasts
+google_fc %>%
+  autoplot(google_2015, level = NULL) +
+  autolayer(google_jan_2016, Close, colour = "black") +
+  labs(y = "$US",
+       title = "Google daily closing stock prices",
+       subtitle = "(Jan 2015 - Jan 2016)") +
+  guides(colour = guide_legend(title = "Forecast"))
+```
+
+## Fitted values and residuals
+
+```{r}
+beer_fit %>% augment()
+```
+
+## Residual diagnostics
+
+```{r}
+autoplot(google_2015, Close) +
+  labs(y = "$US",
+       title = "Google daily closing stock prices in 2015")
+```
+
+```{r}
+aug <- google_2015 %>%
+  model(NAIVE(Close)) %>%
+  augment()
+autoplot(aug, .innov) +
+  labs(y = "$US",
+       title = "Residuals from the naïve method")
+```
+
+```{r}
+aug %>%
+  ggplot(aes(x = .innov)) +
+  geom_histogram() +
+  labs(title = "Histogram of residuals")
+```
+
+```{r}
+aug %>%
+  ACF(.innov) %>%
+  autoplot() +
+  labs(title = "Residuals from the naïve method")
+```
+
+```{r}
+google_2015 %>%
+  model(NAIVE(Close)) %>%
+  gg_tsresiduals()
+```
+
+```{r}
+aug %>% features(.innov, box_pierce, lag = 10, dof = 0)
+aug %>% features(.innov, ljung_box, lag = 10, dof = 0)
+```
+
+```{r}
+fit <- google_2015 %>% model(RW(Close ~ drift()))
+tidy(fit)
+```
+
+```{r}
+augment(fit) %>% features(.innov, ljung_box, lag=10, dof=1)
+```
+
+## Distributional forecasts and prediction intervals
+
+```{r}
+google_2015 %>%
+  model(NAIVE(Close)) %>%
+  forecast(h = 10) %>%
+  hilo()
+```
+
+```{r}
+google_2015 %>%
+  model(NAIVE(Close)) %>%
+  forecast(h = 10) %>%
+  autoplot(google_2015) +
+  labs(title="Google daily closing stock price", y="$US" )
+```
+
+```{r}
+fit <- google_2015 %>%
+  model(NAIVE(Close))
+sim <- fit %>% generate(h = 30, times = 5, bootstrap = TRUE)
+sim
+```
+
+```{r}
+google_2015 %>%
+  ggplot(aes(x = day)) +
+  geom_line(aes(y = Close)) +
+  geom_line(aes(y = .sim, colour = as.factor(.rep)),
+    data = sim) +
+  labs(title="Google daily closing stock price", y="$US" ) +
+  guides(colour = "none")
+```
+
+```{r}
+fc <- fit %>% forecast(h = 30, bootstrap = TRUE)
+fc
+```
+
+```{r}
+autoplot(fc, google_2015) +
+  labs(title="Google daily closing stock price", y="$US" )
+```
+
+```{r}
+google_2015 %>%
+  model(NAIVE(Close)) %>%
+  forecast(h = 10, bootstrap = TRUE, times = 1000) %>%
+  hilo()
+```
+
+## Forecasting using transformations
+
+```{r}
+prices %>%
+  filter(!is.na(eggs)) %>%
+  model(RW(log(eggs) ~ drift())) %>%
+  forecast(h = 50) %>%
+  autoplot(prices %>% filter(!is.na(eggs)),
+    level = 80, point_forecast = lst(mean, median)
+  ) +
+  labs(title = "Annual egg prices",
+       y = "$US (in cents adjusted for inflation) ")
+```
+
+## Forecasting with decomposition
