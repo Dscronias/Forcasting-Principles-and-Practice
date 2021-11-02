@@ -12,6 +12,7 @@ library(lemon)
 library(USgas)
 library(glue)
 library(broom)
+library(janitor)
 
 # Datasets
 olympic_running <- tsibbledata::olympic_running
@@ -290,3 +291,681 @@ prices %>%
 ```
 
 ## Forecasting with decomposition
+
+```{r}
+us_retail_employment <- us_employment %>%
+  filter(year(Month) >= 1990, Title == "Retail Trade")
+dcmp <- us_retail_employment %>%
+  model(STL(Employed ~ trend(window = 7), robust = TRUE)) %>%
+  components() %>%
+  select(-.model)
+dcmp %>%
+  model(NAIVE(season_adjust)) %>%
+  forecast() %>%
+  autoplot(dcmp) +
+  labs(y = "Number of people",
+       title = "US retail employment")
+```
+
+Reminder: this is the adjusted trend (i.e. no seasonality). This is why the graph is different from the one below.
+
+```{r}
+fit_dcmp <- us_retail_employment %>%
+  model(stlf = decomposition_model(
+    STL(Employed ~ trend(window = 7), robust = TRUE),
+    NAIVE(season_adjust)
+  ))
+fit_dcmp %>%
+  forecast() %>%
+  autoplot(us_retail_employment)+
+  labs(y = "Number of people",
+       title = "US retail employment")
+```
+
+```{r}
+fit_dcmp %>% gg_tsresiduals()
+```
+
+## Evaluating point forecast accuracy
+
+```{r}
+aus_production %>% filter(year(Quarter) >= 1995)
+aus_production %>% filter_index("1995 Q1" ~ .)
+aus_production %>%
+  slice(n()-19:0)
+```
+
+```{r}
+aus_retail %>%
+  group_by(State, Industry) %>%
+  slice(1:12)
+```
+
+Very nice, if you need the n first observations by group. (Or you could also just use filter() now that I think about it.)
+
+```{r}
+recent_production <- aus_production %>%
+  filter(year(Quarter) >= 1992)
+beer_train <- recent_production %>%
+  filter(year(Quarter) <= 2007)
+
+beer_fit <- beer_train %>%
+  model(
+    Mean = MEAN(Beer),
+    `Naïve` = NAIVE(Beer),
+    `Seasonal naïve` = SNAIVE(Beer),
+    Drift = RW(Beer ~ drift())
+  )
+
+beer_fc <- beer_fit %>%
+  forecast(h = 10)
+
+beer_fc %>%
+  autoplot(
+    aus_production %>% filter(year(Quarter) >= 1992),
+    level = NULL
+  ) +
+  labs(
+    y = "Megalitres",
+    title = "Forecasts for quarterly beer production"
+  ) +
+  guides(colour = guide_legend(title = "Forecast"))
+```
+
+```{r}
+accuracy(beer_fc, recent_production)
+```
+
+```{r}
+google_fit <- google_2015 %>%
+  model(
+    Mean = MEAN(Close),
+    `Naïve` = NAIVE(Close),
+    Drift = RW(Close ~ drift())
+  )
+
+google_fc <- google_fit %>%
+  forecast(google_jan_2016)
+```
+
+```{r}
+google_fc %>%
+  autoplot(bind_rows(google_2015, google_jan_2016),
+    level = NULL) +
+  labs(y = "$US",
+       title = "Google closing stock prices from Jan 2015") +
+  guides(colour = guide_legend(title = "Forecast"))
+```
+
+## Evaluating distributional forecast accuracy
+
+```{r}
+google_fit %>%
+  forecast(google_jan_2016
+  ) %>%
+  hilo(level = c(80, 95)) %>%
+  print(n = 100)
+```
+
+hilo() to get confidence intervals. It may be written above, but I had forgotten it at that moment.
+
+```{r}
+google_fc %>%
+  filter(.model == "Naïve") %>%
+  autoplot(bind_rows(google_2015, google_jan_2016), level=80)+
+  labs(y = "$US",
+       title = "Google closing stock prices")
+```
+
+```{r}
+google_fc %>%
+  filter(.model == "Naïve", Date == "2016-01-04") %>%
+  accuracy(google_stock, list(qs=quantile_score), probs=0.10)
+```
+
+```{r}
+google_stock %>% filter(Date == "2016-01-04") %>% view()
+```
+
+```{r}
+google_fc %>%
+  filter(.model == "Naïve", Date == "2016-01-04") %>%
+  accuracy(google_stock,
+    list(winkler = winkler_score), level = 80)
+```
+
+```{r}
+google_fc %>%
+  accuracy(google_stock, list(crps = CRPS))
+```
+
+```{r}
+google_fc %>%
+  accuracy(google_stock, list(skill = skill_score(CRPS)))
+```
+
+## Time-series cross-validation
+
+```{r}
+# Time series cross-validation accuracy
+google_2015_tr <- google_2015 %>%
+  stretch_tsibble(.init = 3, .step = 1) %>%
+  relocate(Date, Symbol, .id)
+google_2015_tr
+```
+
+```{r}
+# TSCV accuracy
+google_2015_tr %>%
+  model(RW(Close ~ drift())) %>%
+  forecast(h = 1) %>%
+  accuracy(google_2015)
+# Training set accuracy
+google_2015 %>%
+  model(RW(Close ~ drift())) %>%
+  accuracy()
+```
+
+
+```{r}
+google_2015_tr <- google_2015 %>%
+  stretch_tsibble(.init = 3, .step = 1)
+fc <- google_2015_tr %>%
+  model(RW(Close ~ drift())) %>%
+  forecast(h = 8)
+```
+```{r}
+fc %>% print(n = 50)
+```
+.id == 1: forecasts for day 4 to 11 (8 days) using the first three days
+.id == 2: forecasts for day 5 to 12 (8 days) using the first four days
+
+And so on.
+
+```{r}
+google_2015_tr <- google_2015 %>%
+  stretch_tsibble(.init = 3, .step = 1)
+fc <- google_2015_tr %>%
+  model(RW(Close ~ drift())) %>%
+  forecast(h = 8) %>%
+  group_by(.id) %>%
+  mutate(h = row_number()) %>%
+  ungroup()
+
+# fc dataset
+fc %>% print(n = 50)
+
+# Accuracy
+fc %>%
+  accuracy(google_2015, by = c("h", ".model"))
+
+fc %>%
+  accuracy(google_2015, by = c("h", ".model")) %>%
+  ggplot(aes(x = h, y = RMSE)) +
+  geom_point()
+```
+
+## Exercises
+
+1. Produce forecasts using NAIVE, SNAIVE or drift()
+
+**Australian population**
+
+```{r}
+global_economy_aus <- global_economy %>% filter(Country ==  "Australia")
+global_economy_aus
+global_economy_aus %>% autoplot(Population)
+```
+
+Drift is probably better.
+
+```{r}
+global_economy_aus %>%
+  model(
+    Naive = NAIVE(Population),
+    Drift = RW(Population ~ drift())
+  ) %>%
+  forecast(h = 4) %>%
+  autoplot(global_economy_aus, level = NULL)
+```
+
+SNAIVE didn't work, I don't know why?
+
+Using forecast() only yields the h periods after the last year in the dataset. The original dataset is put in autoplot, so the original time series is also in the graph.
+
+```{r}
+aus_production %>% autoplot(Bricks)
+```
+
+```{r}
+aus_production %>%
+  drop_na(Bricks) %>%
+  model(SNAIVE = SNAIVE(Bricks ~ lag("year"))) %>%
+  forecast(h = 12) %>%
+  autoplot(aus_production, level = NULL)
+```
+
+There are NAs in the Bricks column. You can change the seasonality in SNAIVE (e.g. "year", "2 year", "3 year")
+
+```{r}
+aus_livestock %>% tabyl(Animal) %>%
+  adorn_pct_formatting(2) %>%
+  kable()
+```
+
+```{r}
+aus_livestock %>%
+  filter(Animal == "Lambs" & State == "New South Wales") %>%
+  autoplot(Count)
+```
+
+```{r}
+aus_livestock %>%
+  filter(Animal == "Lambs" & State == "New South Wales") %>%
+  model(
+    Naive = NAIVE(Count),
+    Snaive = SNAIVE(Count),
+    Drift = RW(Count ~ drift())
+  ) %>%
+  forecast(h = "3 year") %>%
+  autoplot(aus_livestock, level = NULL)
+```
+
+No point in doing anything other than Seasonal Naive.
+
+I'll stop there for this exercise, I've done enough.
+
+2. Facebook stock price
+
+```{r}
+fb_stock <- gafa_stock %>%
+  filter(Symbol == "FB")
+fb_stock
+```
+
+```{r}
+fb_stock %>% autoplot(Close)
+```
+
+```{r}
+fb_stock <- fb_stock %>%
+  mutate(day = row_number()) %>%
+  update_tsibble(index = day, regular = TRUE)
+```
+
+```{r}
+x_1 = fb_stock$day %>% min()
+x_2 = fb_stock$day %>% max()
+
+y_1 = fb_stock %>%
+  filter(day == min(day)) %>%
+  as_tibble() %>%
+  pull(Close)
+
+y_2 = fb_stock %>%
+  filter(day == max(day)) %>%
+  as_tibble() %>%
+  pull(Close)
+
+x_1 # First day
+x_2 # Last day
+y_1 # Value first day
+y_2 # Value last day
+```
+
+```{r}
+fb_stock %>%
+  model(
+    Drift = RW(Close ~ drift())
+  ) %>%
+  forecast(h = 90) %>%
+  autoplot(fb_stock, level = NULL) +
+  geom_segment(aes(x = x_1, y = y_1, xend = x_2, yend = y_2), color="blue")
+```
+
+Or you could just take the mathematical equation in that other chapter to show that the drift forecast are actually a continuation of the line between the values of the first and last observations.
+
+```{r}
+fb_stock %>%
+  model(
+    Naive = NAIVE(Close),
+    Mean = MEAN(Close),
+    Drift = RW(Close ~ drift())
+  ) %>%
+  forecast(h = 90) %>%
+  autoplot(fb_stock, level = NULL)
+```
+
+At the very least, Mean or Naive should be better than drift, since the stock is on a decreasing trend.
+
+3. Quarterly Australian beer production
+
+```{r}
+# Extract data of interest
+recent_production <- aus_production %>%
+  filter(year(Quarter) >= 1992)
+# Define and estimate a model
+fit <- recent_production %>% model(SNAIVE(Beer))
+```
+
+```{r}
+# Look at the residuals
+fit %>% gg_tsresiduals()
+```
+
+```{r}
+# Look a some forecasts
+fit %>% forecast() %>% autoplot(recent_production)
+```
+
+Well, there does seem to be some negative auto correlation.
+
+```{r}
+fit %>%
+  augment() %>%
+  features(.innov, ljung_box, lag = 4, dof = 0)
+```
+
+That settles it.
+
+4. Australian Exports
+
+```{r}
+aus_exports <- global_economy %>%
+  filter(Country == "Australia") %>%
+  select(Year, Country, Exports)
+aus_exports
+
+aus_bricks <- aus_production %>%
+  select(Bricks) %>%
+  drop_na()
+aus_bricks
+```
+
+```{r}
+aus_exports %>%
+  autoplot(Exports)
+```
+
+Not much seasonality (plus, we only have years)
+
+```{r}
+aus_exports_fit <- aus_exports %>%
+  model(Naive = NAIVE(Exports))
+
+aus_exports_fit %>%
+  forecast() %>%
+  autoplot(aus_exports)
+```
+
+```{r}
+aus_exports_fit %>%
+  gg_tsresiduals()
+
+aus_exports_fit %>%
+  augment() %>%
+  features(.innov, ljung_box, lag = 1, dof = 0)
+```
+
+First order autocorrelation (if I'm not mistaken?)
+OK, so after some research, the Ljung-Box is [contested by some econometricians](https://stats.stackexchange.com/questions/148004/testing-for-autocorrelation-ljung-box-versus-breusch-godfrey) in autoregressive models.
+Considering a Naive model is y_t = y_t-1 + e, isn't it a specific kind of AR1 model?
+
+```{r}
+aus_bricks %>%
+  autoplot(Bricks)
+```
+
+```{r}
+aus_bricks %>%
+  gg_season()
+```
+
+```{r}
+aus_bricks_fit <- aus_bricks %>%
+  model(Snaive = SNAIVE(Bricks ~ lag("year")))
+```
+
+```{r}
+aus_bricks_fit %>%
+  forecast() %>%
+  autoplot(aus_bricks, level = NULL)
+```
+
+```{r}
+aus_bricks_fit %>%
+  gg_tsresiduals()
+```
+
+No need to run a test here.
+
+5. Aus_livestock
+
+```{r}
+aus_livestock_victoria <- aus_livestock %>%
+  filter(State == "Victoria")
+aus_livestock_victoria %>%
+  autoplot()
+```
+
+```{r}
+aus_livestock_victoria %>%
+  model(
+    SNAIVE = SNAIVE(Count)
+  ) %>%
+  forecast() %>%
+  autoplot(aus_livestock_victoria, level = NULL)
+ggsave("aus_livestock_victoria.jpg", width = 3000, height = 4000, unit = "px")
+```
+
+It's reasonable. It could be better with a slight drift, for some time series.
+
+7. Retail
+
+```{r}
+set.seed(451)
+aus_retail_sample <- aus_retail %>%
+  filter(`Series ID` == sample(aus_retail$`Series ID`, 1))
+aus_retail_sample
+aus_retail_sample %>% autoplot()
+```
+
+```{r}
+aus_retail_sample_train <- aus_retail_sample %>%
+  filter(year(Month) < 2011)
+
+autoplot(aus_retail_sample, Turnover) +
+  autolayer(aus_retail_sample_train, Turnover, colour = "red")
+
+aus_retail_sample_train %>% tail()
+```
+
+```{r}
+aus_retail_sample_fit <- aus_retail_sample_train %>%
+  model(SNAIVE(Turnover))
+
+aus_retail_sample_fit %>% gg_tsresiduals()
+```
+
+Everything is wrong: heteroskedasticity, autocorrelation and the errors are not normally distributed
+
+```{r}
+aus_retail_sample_fit %>%
+  augment() %>%
+  ggplot(
+    aes(
+      sample = .innov
+    )
+  ) +
+  stat_qq() +
+  stat_qq_line()
+
+aus_retail_sample_fit %>%
+  augment() %>%
+  drop_na() %>%
+  pull(.innov) %>%
+  shapiro.test()
+```
+
+That settles it.
+
+```{r}
+aus_retail_sample_fc <- aus_retail_sample_fit %>%
+  forecast(new_data = anti_join(aus_retail_sample, aus_retail_sample_train))
+aus_retail_sample_fc %>% autoplot(aus_retail_sample)
+```
+
+Haha.
+
+```{r}
+aus_retail_sample_fit %>%
+  augment() %>%
+  autoplot(Turnover) +
+  autolayer(aus_retail_sample_fit %>% augment(), .fitted, colour = "blue")
+aus_retail_sample_fit %>% accuracy()
+aus_retail_sample_fc %>% accuracy(aus_retail_sample)
+```
+
+Not good.
+
+8. aus_livestock
+
+```{r}
+pigs_nsw <- aus_livestock %>%
+  filter(Animal == "Pigs" & State == "New South Wales")
+pigs_nsw
+pigs_nsw %>% autoplot(Count)
+```
+
+2008 hit hard.
+
+```{r}
+pigs_nsw %>% gg_season()
+```
+
+Nothing obvious there.
+
+```{r}
+df_size = nrow(pigs_nsw)
+test_size = 72
+train_size = df_size - test_size
+
+pigs_nsw_train <- pigs_nsw %>%
+  slice(
+    1:train_size
+  )
+pigs_nsw_test <- pigs_nsw %>%
+  slice(
+    (train_size+1):df_size
+  )
+```
+
+```{r}
+pigs_nsw_train_fit <- pigs_nsw_train %>%
+  model(
+    NAIVE = NAIVE(Count),
+    SNAIVE = SNAIVE(Count),
+    Mean = MEAN(Count),
+    Drift = RW(Count ~ drift())
+  )
+
+pigs_nsw_train_fc <- pigs_nsw_train_fit %>% forecast(new_data=pigs_nsw_test)
+pigs_nsw_train_fc %>% autoplot(pigs_nsw_train, level = NULL)
+pigs_nsw_train_fit %>% accuracy() %>% arrange(RMSE)
+pigs_nsw_train_fc %>% accuracy(pigs_nsw_test)
+```
+
+```{r}
+pigs_nsw_train_fc %>%
+  rename(Count_fc = Count) %>%
+  left_join(pigs_nsw_test) %>%
+  rename(Count_true = Count)
+```
+
+```{r}
+pigs_nsw_train_fc %>%
+  autoplot(pigs_nsw_train, level = NULL) +
+  autolayer(pigs_nsw_test)
+```
+
+```{r}
+pigs_nsw_train_fit %>% select(Animal, State, Drift) %>% gg_tsresiduals()
+```
+
+Not white noise.
+
+Exercises 9 and 10 are similar to 8. I'll skip them.
+
+11. Bricks, again
+
+```{r}
+bricks <- aus_production %>%
+  select(Quarter, Bricks) %>%
+  drop_na()
+bricks
+bricks %>% autoplot()
+```
+
+```{r}
+bricks_stl <- bricks %>%
+  model(
+    STL_default = STL(Bricks, robust = TRUE),
+    STL_fixed = STL(Bricks ~ trend() + season(window="periodic"), robust = TRUE)
+    )
+bricks_stl %>%
+  components() %>%
+  autoplot()
+```
+
+Changing seasonality makes more sense, considering there is more variation around the 1980s.
+
+```{r}
+bricks_stl %>%
+  components() %>%
+  filter(.model == "STL_default") %>%
+  select(Quarter, Bricks, season_adjust) %>%
+  autoplot(Bricks, colour = "gray") +
+  geom_line(
+    aes(y = season_adjust),
+    colour = "blue"
+  )
+```
+
+```{r}
+bricks_stl_default <- bricks_stl %>%
+  select(STL_default) %>%
+  components() %>%
+  select(-.model) 
+
+bricks_stl_default %>%
+  model(
+    Naive = NAIVE(season_adjust)
+  ) %>% 
+  forecast() %>%
+  autoplot(bricks_stl_default)
+```
+
+With decomposition_model():
+
+```{r}
+bricks_dcmp <- bricks %>%
+  model(
+    STL_forecast = decomposition_model(
+      STL(Bricks, robust = TRUE),
+      NAIVE(season_adjust)
+    )
+  )
+
+bricks_dcmp %>% 
+  forecast() %>%
+  autoplot(bricks)
+```
+
+```{r}
+bricks_dcmp %>%
+  gg_tsresiduals()
+```
+
+Slight positive autocorrelation
+
+I'll skip the rest. I want to do regressions.

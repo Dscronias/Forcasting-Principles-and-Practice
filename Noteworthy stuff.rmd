@@ -1,0 +1,83 @@
+# Noteworthy stuff
+
+Small bits of code that I may use again one day. This will save me some time by not digging through the other files.
+
+```{r, include = FALSE}
+# Libraries
+library(tidyverse)
+library(tsibble)
+library(fpp3)
+library(knitr)
+library(svglite)
+library(ggthemes)
+library(lemon)
+library(USgas)
+library(glue)
+library(broom)
+library(janitor)
+
+# Datasets
+olympic_running <- tsibbledata::olympic_running
+pbs <- tsibbledata::PBS
+vic_elec <- tsibbledata::vic_elec
+tourism <- tsibble::tourism
+aus_production <- tsibbledata::aus_production
+gafa_stock <- tsibbledata::gafa_stock
+pelt <- tsibbledata::pelt
+aus_arrivals <- fpp3::aus_arrivals
+aus_retail <- tsibbledata::aus_retail
+us_employment <- fpp3::us_employment
+global_economy <- tsibbledata::global_economy
+aus_livestock <- tsibbledata::aus_livestock
+
+# Functions
+
+## Get the lambda for a Box-Cox transformation
+## using the Guerrero method
+get_boxcox_lambda <- function(df, var) {
+  df %>%
+  features(df[, var], features = guerrero) %>%
+  pull(lambda_guerrero)
+}
+
+# Parameters
+kable_length <- 5
+svg_res <- 144
+
+# GGplot graphical style
+theme_set(
+  theme_tufte() +
+  theme(
+    axis.line = element_line(colour = "black", size = rel(1))
+  )
+)
+short_axis <- function(baxis = "both", laxis = "both") {
+  return(lemon::coord_capped_cart(bottom = baxis, left = laxis))
+}
+```
+
+## Graphs
+
+I have been trying to do cleaner graphs, mainly inspired by Tufte. I'm getting there.
+
+```{r}
+us_change %>%
+  select(-Consumption, -Income) %>%
+  pivot_longer(-Quarter) %>%
+  ggplot(aes(Quarter, value, color = name)) +
+  geom_line() +
+  facet_grid(name ~ ., scales = "free_y") +
+  guides(colour = "none") +
+  labs(y = "% change") +
+  coord_capped_cart(bottom = "both", left = "both") +
+  scale_x_yearquarter(
+    breaks = c(
+      seq(yearquarter("1970 Q1"), yearquarter("2015 Q1"), by = 4 * 5),
+      yearquarter("2019 Q1")
+    ),
+    date_labels = "%Y"
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0.1, 0.1))
+  )
+```
